@@ -13,25 +13,52 @@ type State = {
   client_seed: string;
   nonce: number;
   wallet_address: string | null;
+  streak_days: number;
+  streak_today: boolean;
+  best_streak: number;
+  multiplier: number;
+  referrals: number;
+  ref_earnings: number;
+  ref_percent: number;
+  week_points: number;
   server_time: string;
+  welcome_bonus?: boolean;
 };
 type RollRow = { id: number; kind: string; roll: number; prize: number; server_seed_hash: string; client_seed: string; nonce: number; created_at: string };
 type Revealed = { id?: number; server_seed: string; server_seed_hash: string; client_seed: string; last_nonce: number };
-type Tab = "roll" | "top" | "fair" | "shop";
+type Tab = "roll" | "top" | "invite" | "shop" | "fair";
+
+const BOT = process.env.NEXT_PUBLIC_BOT_USERNAME || "Freeroll1bot";
 
 const PRIZES = [
-  { range: "0 – 8999", prize: 5 },
+  { range: "0000 – 8999", prize: 5 },
   { range: "9000 – 9899", prize: 25 },
   { range: "9900 – 9989", prize: 100 },
   { range: "9990 – 9998", prize: 1000 },
   { range: "9999", prize: 10000 },
 ];
 
+const TITLES = ["Rookie", "Roller", "Lucky", "Hot Hand", "High Roller", "Shark", "Legend", "Mythic"];
+/** Level n needs 25·(n-1)² points: 1 → 0, 2 → 25, 3 → 100, 5 → 400, 10 → 2025 … */
+function levelOf(points: number) {
+  const level = Math.floor(Math.sqrt(points / 25)) + 1;
+  const cur = 25 * (level - 1) ** 2;
+  const next = 25 * level ** 2;
+  const title = TITLES[Math.min(TITLES.length - 1, Math.floor((level - 1) / 3))];
+  return { level, title, progress: (points - cur) / (next - cur), toNext: next - points };
+}
+
 declare global {
   interface Window { Telegram?: any }
 }
-
 const tg = () => (typeof window !== "undefined" ? window.Telegram?.WebApp : undefined);
+const haptic = (kind: "light" | "medium" | "heavy" | "success" | "warning" | "select") => {
+  const h = tg()?.HapticFeedback;
+  if (!h) return;
+  if (kind === "select") h.selectionChanged();
+  else if (kind === "success" || kind === "warning") h.notificationOccurred(kind);
+  else h.impactOccurred(kind);
+};
 
 async function api<T = any>(path: string, body: unknown = {}): Promise<T> {
   const res = await fetch(path, {
@@ -55,17 +82,19 @@ async function sha256Hex(s: string) {
   const d = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)));
   return [...d].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-
 function fmt(ms: number) {
   const s = Math.max(0, Math.ceil(ms / 1000));
-  const m = Math.floor(s / 60);
-  return `${String(m).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const mm = String(m).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
+const inviteLink = (id: number) => `https://t.me/${BOT}?start=ref_${id}`;
 
 export default function AppRoot() {
-  const manifestUrl = `${window.location.origin}/tonconnect-manifest.json`;
   return (
-    <TonConnectUIProvider manifestUrl={manifestUrl}>
+    <TonConnectUIProvider manifestUrl={`${window.location.origin}/tonconnect-manifest.json`}>
       <Game />
     </TonConnectUIProvider>
   );
@@ -76,7 +105,8 @@ function Game() {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("roll");
   const [now, setNow] = useState(Date.now());
-  const offset = useRef(0); // server clock minus local clock
+  const [toast, setToast] = useState<string | null>(null);
+  const offset = useRef(0);
 
   const apply = useCallback((s: State) => {
     offset.current = new Date(s.server_time).getTime() - Date.now();
@@ -87,46 +117,69 @@ function Game() {
     const w = tg();
     w?.ready();
     w?.expand();
+    w?.setHeaderColor?.("secondary_bg_color");
     if (!w?.initData) {
       setError("Open this app from the Telegram bot to play.");
       return;
     }
-    api<State>("/api/me").then(apply).catch((e) => setError(String(e.message || e)));
+    api<State>("/api/me")
+      .then((s) => {
+        apply(s);
+        if (s.welcome_bonus) setToast("🎁 Welcome! Your friend's invite gave you +50 points.");
+        // Ask once so the bot can remind you when your free roll is ready.
+        try { w.requestWriteAccess?.(); } catch {}
+      })
+      .catch((e) => setError(String(e.message || e)));
   }, [apply]);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(t);
   }, []);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   if (error) return <div className="card"><h2>🎲 Free Roll</h2><p className="hint">{error}</p></div>;
   if (!state) return <div className="card"><p className="hint">Loading…</p></div>;
 
-  const serverNow = now + offset.current;
-  const nextAt = state.next_free_roll_at ? new Date(state.next_free_roll_at).getTime() : 0;
-  const waitMs = Math.max(0, nextAt - serverNow);
+  const waitMs = Math.max(0, (state.next_free_roll_at ? new Date(state.next_free_roll_at).getTime() : 0) - (now + offset.current));
+  const lv = levelOf(state.points);
 
   return (
     <>
-      <div className="row" style={{ marginBottom: 12 }}>
-        <div>
-          <div className="hint">Points</div>
-          <div className="stat">⭐ {state.points.toLocaleString()}</div>
+      {toast && <div className="toast" onClick={() => setToast(null)}>{toast}</div>}
+
+      <div className="card header">
+        <div className="row">
+          <div>
+            <div className="hint">Points</div>
+            <div className="stat">⭐ {state.points.toLocaleString()}</div>
+          </div>
+          <div className="streak" title="Daily streak">
+            <span className={state.streak_days > 0 ? "flame on" : "flame"}>🔥</span>
+            <b>{state.streak_days}</b>
+            <span className="pill">x{Number(state.multiplier).toFixed(1)}</span>
+          </div>
         </div>
-        <div style={{ textAlign: "right" }}>
-          <div className="hint">Bonus rolls</div>
-          <div className="stat">{state.bonus_rolls}</div>
+        <div className="row" style={{ marginTop: 10 }}>
+          <span className="hint">Lv {lv.level} · {lv.title}</span>
+          <span className="hint">{lv.toNext.toLocaleString()} to Lv {lv.level + 1}</span>
         </div>
+        <div className="bar"><div style={{ width: `${Math.max(3, lv.progress * 100)}%` }} /></div>
       </div>
 
       {tab === "roll" && <RollTab state={state} apply={apply} waitMs={waitMs} />}
       {tab === "top" && <TopTab />}
-      {tab === "fair" && <FairTab state={state} apply={apply} />}
+      {tab === "invite" && <InviteTab state={state} />}
       {tab === "shop" && <ShopTab state={state} apply={apply} />}
+      {tab === "fair" && <FairTab state={state} apply={apply} />}
 
       <nav className="tabs">
-        {([["roll", "🎲", "Roll"], ["top", "🏆", "Top"], ["fair", "🔐", "Fair"], ["shop", "✨", "Shop"]] as const).map(([id, ico, label]) => (
-          <button key={id} className={tab === id ? "on" : ""} onClick={() => { tg()?.HapticFeedback?.selectionChanged(); setTab(id); }}>
+        {([["roll", "🎲", "Roll"], ["top", "🏆", "Top"], ["invite", "👥", "Invite"], ["shop", "✨", "Shop"], ["fair", "🔐", "Fair"]] as const).map(([id, ico, label]) => (
+          <button key={id} className={tab === id ? "on" : ""} onClick={() => { haptic("select"); setTab(id); }}>
             <span className="ico">{ico}</span>{label}
           </button>
         ))}
@@ -135,52 +188,134 @@ function Game() {
   );
 }
 
+/** Four slot-machine reels that stop one by one, left to right. */
+function Reels({ value, spinning, win }: { value: number | null; spinning: boolean; win: boolean }) {
+  const [digits, setDigits] = useState<string[]>(["?", "?", "?", "?"]);
+  const [locked, setLocked] = useState(4);
+
+  useEffect(() => {
+    if (spinning) setLocked(0);
+  }, [spinning]);
+
+  useEffect(() => {
+    if (!spinning && (value === null || locked >= 4)) return;
+    const target = value === null ? null : String(value).padStart(4, "0");
+    const t = setInterval(() => {
+      setDigits((d) => d.map((cur, i) => (target && i < locked ? target[i] : String(Math.floor(Math.random() * 10)))));
+    }, 55);
+    return () => clearInterval(t);
+  }, [spinning, value, locked]);
+
+  // Once the result is known, lock one reel every 280 ms.
+  useEffect(() => {
+    if (value === null || locked >= 4) return;
+    const t = setTimeout(() => {
+      setLocked((l) => l + 1);
+      haptic(locked === 3 ? "heavy" : "light");
+    }, locked === 0 ? 150 : 280);
+    return () => clearTimeout(t);
+  }, [value, locked]);
+
+  useEffect(() => {
+    if (value !== null && locked >= 4) setDigits(String(value).padStart(4, "0").split(""));
+  }, [value, locked]);
+
+  return (
+    <div className={`reels ${win && locked >= 4 ? "win" : ""}`}>
+      {digits.map((d, i) => (
+        <div key={i} className={`reel ${i < locked || (!spinning && value === null) ? "" : "spin"}`}>{d}</div>
+      ))}
+    </div>
+  );
+}
+
 function RollTab({ state, apply, waitMs }: { state: State; apply: (s: State) => void; waitMs: number }) {
-  const [display, setDisplay] = useState<number | null>(null);
-  const [last, setLast] = useState<{ roll: number; prize: number; kind: string } | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [value, setValue] = useState<number | null>(null);
+  const [spinning, setSpinning] = useState(false);
+  const [last, setLast] = useState<{ roll: number; prize: number; base: number; mult: number; kind: string; streak: number } | null>(null);
+  const [revealed, setRevealed] = useState(false);
   const free = waitMs <= 0;
-  const canRoll = !busy && (free || state.bonus_rolls > 0);
+  const canRoll = !spinning && (free || state.bonus_rolls > 0);
 
   async function roll() {
-    setBusy(true);
+    haptic("medium");
+    setSpinning(true);
+    setValue(null);
     setLast(null);
-    const spin = setInterval(() => setDisplay(Math.floor(Math.random() * 10000)), 50);
+    setRevealed(false);
     try {
-      const [res] = await Promise.all([api("/api/roll"), new Promise((r) => setTimeout(r, 900))]);
-      clearInterval(spin);
+      const [res] = await Promise.all([api("/api/roll"), new Promise((r) => setTimeout(r, 700))]);
       if (res.error === "cooldown") {
         apply(res.state);
-        setDisplay(null);
+        setSpinning(false);
         return;
       }
-      setDisplay(res.roll);
-      setLast({ roll: res.roll, prize: res.prize, kind: res.kind });
-      apply(res.state);
-      tg()?.HapticFeedback?.notificationOccurred(res.prize >= 100 ? "success" : "warning");
+      setValue(res.roll);
+      setSpinning(false);
+      // Reveal the prize after the reels finish (4 × 280 ms).
+      setTimeout(() => {
+        setLast({ roll: res.roll, prize: res.prize, base: res.base_prize, mult: Number(res.multiplier), kind: res.kind, streak: res.streak_days });
+        setRevealed(true);
+        apply(res.state);
+        haptic(res.base_prize >= 100 ? "success" : "warning");
+      }, 1150);
     } catch (e: any) {
-      clearInterval(spin);
-      setDisplay(null);
+      setSpinning(false);
       tg()?.showAlert?.(`Roll failed: ${e.message}`);
-    } finally {
-      setBusy(false);
     }
   }
 
+  function shareStory() {
+    if (!last) return;
+    const url = `${window.location.origin}/api/story?roll=${last.roll}&prize=${last.prize}&streak=${last.streak}`;
+    const text = `I rolled ${String(last.roll).padStart(4, "0")} and won ${last.prize} points on Free Roll 🎲`;
+    const w = tg();
+    if (w?.shareToStory) {
+      w.shareToStory(url, { text, widget_link: { url: inviteLink(state.tg_id), name: "Play Free Roll" } });
+    } else {
+      w?.openTelegramLink?.(`https://t.me/share/url?url=${encodeURIComponent(inviteLink(state.tg_id))}&text=${encodeURIComponent(text)}`);
+    }
+  }
+
+  const big = !!last && last.base >= 100;
   return (
     <>
-      <div className="card">
-        <div className={`big ${last && last.prize >= 100 ? "win" : ""}`}>
-          {display === null ? "????" : String(display).padStart(4, "0")}
-        </div>
-        <p className="hint" style={{ textAlign: "center", minHeight: 20 }}>
-          {last ? `+${last.prize} points${last.kind === "bonus" ? " (bonus roll)" : ""}` : "Roll a number from 0000 to 9999"}
+      <div className={`card roll-card ${big && revealed ? "jackpot" : ""}`}>
+        <Reels value={value} spinning={spinning} win={big} />
+        <p className="result" style={{ minHeight: 26 }}>
+          {revealed && last ? (
+            <>
+              <b className={big ? "gold" : ""}>+{last.prize.toLocaleString()} points</b>
+              {last.mult > 1 && <span className="hint"> ({last.base} × {last.mult.toFixed(1)} streak)</span>}
+              {last.kind === "bonus" && <span className="hint"> · bonus roll</span>}
+            </>
+          ) : spinning ? <span className="hint">Rolling…</span> : <span className="hint">Roll a number from 0000 to 9999</span>}
         </p>
         <button className="btn" disabled={!canRoll} onClick={roll}>
-          {busy ? "Rolling…" : free ? "Free roll" : state.bonus_rolls > 0 ? `Use bonus roll (${state.bonus_rolls})` : `Next free roll in ${fmt(waitMs)}`}
+          {spinning ? "Rolling…" : free ? "🎲 Free roll" : state.bonus_rolls > 0 ? `Use bonus roll (${state.bonus_rolls})` : `Next free roll in ${fmt(waitMs)}`}
         </button>
-        {!free && state.bonus_rolls > 0 && <p className="hint" style={{ textAlign: "center" }}>Free roll in {fmt(waitMs)}</p>}
+        {!free && state.bonus_rolls > 0 && <p className="hint center">Free roll in {fmt(waitMs)}</p>}
+        {revealed && last && (
+          <button className="btn ghost" style={{ marginTop: 8 }} onClick={shareStory}>📣 Share to story</button>
+        )}
       </div>
+
+      <div className="card">
+        <div className="row">
+          <h3 style={{ margin: 0 }}>🔥 Daily streak</h3>
+          <span className="pill">best {state.best_streak}</span>
+        </div>
+        <p className="hint">
+          Roll at least once a day to keep your streak. Each day adds +0.1 to your multiplier, up to x2.0 at 11 days.
+          {state.streak_today ? " Today is done ✅" : state.streak_days > 0 ? " Roll today to keep it!" : ""}
+        </p>
+        <div className="days">
+          {Array.from({ length: 11 }, (_, i) => (
+            <div key={i} className={i < state.streak_days ? "day on" : "day"}>{i + 1}</div>
+          ))}
+        </div>
+      </div>
+
       <div className="card">
         <table>
           <thead><tr><th>Roll</th><th style={{ textAlign: "right" }}>Prize</th></tr></thead>
@@ -190,28 +325,74 @@ function RollTab({ state, apply, waitMs }: { state: State; apply: (s: State) => 
             ))}
           </tbody>
         </table>
-        <p className="hint">Points are for fun and the leaderboard. They have no cash value and cannot be withdrawn.</p>
+        <p className="hint">Prizes are multiplied by your streak. Points are for fun and the leaderboard. They have no cash value and cannot be withdrawn.</p>
       </div>
     </>
   );
 }
 
+type Row = { name: string; points: number; total_rolls: number; me: boolean };
 function TopTab() {
-  const [data, setData] = useState<{ top: { name: string; points: number; total_rolls: number }[]; my_rank: number } | null>(null);
-  useEffect(() => { api("/api/leaderboard").then(setData).catch(() => setData({ top: [], my_rank: 0 })); }, []);
+  const [data, setData] = useState<{ all: Row[]; week: Row[]; my_rank: number; week_ends_at: string } | null>(null);
+  const [view, setView] = useState<"week" | "all">("week");
+  useEffect(() => { api("/api/leaderboard").then(setData).catch(() => setData({ all: [], week: [], my_rank: 0, week_ends_at: "" })); }, []);
   if (!data) return <div className="card hint">Loading…</div>;
+  const rows = view === "week" ? data.week : data.all;
+  const left = data.week_ends_at ? new Date(data.week_ends_at).getTime() - Date.now() : 0;
+  const days = Math.floor(left / 86400000);
   return (
     <div className="card">
-      <div className="row"><h3 style={{ margin: 0 }}>Leaderboard</h3>{data.my_rank > 0 && <span className="pill">You: #{data.my_rank}</span>}</div>
-      <table>
-        <thead><tr><th>#</th><th>Player</th><th style={{ textAlign: "right" }}>Points</th></tr></thead>
-        <tbody>
-          {data.top.map((r, i) => (
-            <tr key={i}><td>{i + 1}</td><td>{r.name}</td><td style={{ textAlign: "right" }}>{r.points.toLocaleString()}</td></tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="seg">
+        <button className={view === "week" ? "on" : ""} onClick={() => setView("week")}>This week</button>
+        <button className={view === "all" ? "on" : ""} onClick={() => setView("all")}>All time</button>
+      </div>
+      <p className="hint center">
+        {view === "week" ? `Season resets in ${days}d ${Math.floor((left % 86400000) / 3600000)}h (Monday 00:00 UTC)` : data.my_rank > 0 ? `Your rank: #${data.my_rank}` : ""}
+      </p>
+      {rows.length === 0 ? <p className="hint center">No rolls yet. Be the first!</p> : (
+        <table>
+          <thead><tr><th>#</th><th>Player</th><th style={{ textAlign: "right" }}>Points</th></tr></thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i} className={r.me ? "me" : ""}>
+                <td>{i < 3 ? ["🥇", "🥈", "🥉"][i] : i + 1}</td>
+                <td>{r.name}{r.me ? " (you)" : ""}</td>
+                <td style={{ textAlign: "right" }}>{Number(r.points).toLocaleString()}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
+  );
+}
+
+function InviteTab({ state }: { state: State }) {
+  const link = inviteLink(state.tg_id);
+  const [copied, setCopied] = useState(false);
+  const text = "🎲 Free roll every hour. Win points, build your streak and climb the leaderboard. Join me:";
+  return (
+    <>
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Invite friends</h3>
+        <p className="hint">
+          You get <b>{state.ref_percent}%</b> of every point your friends win, forever. Each friend also starts with +50 points.
+        </p>
+        <div className="row stats3">
+          <div><div className="stat">{state.referrals}</div><div className="hint">friends</div></div>
+          <div><div className="stat">⭐ {Number(state.ref_earnings).toLocaleString()}</div><div className="hint">earned</div></div>
+        </div>
+        <button className="btn" style={{ marginTop: 12 }}
+          onClick={() => { haptic("light"); tg()?.openTelegramLink?.(`https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(text)}`); }}>
+          👥 Invite friends
+        </button>
+        <button className="btn ghost" style={{ marginTop: 8 }}
+          onClick={async () => { try { await navigator.clipboard.writeText(link); setCopied(true); haptic("success"); } catch { tg()?.showAlert?.(link); } }}>
+          {copied ? "✅ Link copied" : "Copy invite link"}
+        </button>
+        <p className="mono" style={{ marginTop: 8 }}>{link}</p>
+      </div>
+    </>
   );
 }
 
@@ -232,10 +413,10 @@ function FairTab({ state, apply }: { state: State; apply: (s: State) => void }) 
 
   async function verify(r: RollRow) {
     const rev = hist?.revealed.find((s) => s.server_seed_hash === r.server_seed_hash);
-    if (!rev) return setChecks((c) => ({ ...c, [r.id]: "Seed not revealed yet. Rotate your seed first." }));
+    if (!rev) return setChecks((c) => ({ ...c, [r.id]: "Rotate your seed first to reveal it." }));
     const hashOk = (await sha256Hex(rev.server_seed)) === r.server_seed_hash;
     const value = await hmacRoll(rev.server_seed, r.client_seed, r.nonce);
-    setChecks((c) => ({ ...c, [r.id]: hashOk && value === r.roll ? `✅ Verified: ${value}` : `❌ Mismatch (got ${value})` }));
+    setChecks((c) => ({ ...c, [r.id]: hashOk && value === r.roll ? `✅ ${value}` : `❌ got ${value}` }));
   }
 
   return (
@@ -299,8 +480,7 @@ function ShopTab({ state, apply }: { state: State; apply: (s: State) => void }) 
       if (!link) throw new Error(error || "no_link");
       tg()?.openInvoice(link, async (status: string) => {
         if (status === "paid") {
-          tg()?.HapticFeedback?.notificationOccurred("success");
-          // The webhook credits the rolls; poll briefly until they show up.
+          haptic("success");
           for (let i = 0; i < 6; i++) {
             await new Promise((r) => setTimeout(r, 1000));
             const s = await api<State>("/api/me");
@@ -320,7 +500,7 @@ function ShopTab({ state, apply }: { state: State; apply: (s: State) => void }) 
     <>
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Bonus rolls</h3>
-        <p className="hint">Skip the wait. Bonus rolls are used when your free roll is on cooldown.</p>
+        <p className="hint">Skip the wait. Bonus rolls are used when your free roll is on cooldown, and count for your streak multiplier.</p>
         {[["rolls5", "5 bonus rolls", 25], ["rolls20", "20 bonus rolls", 75]].map(([id, label, stars]) => (
           <div className="row" key={id as string} style={{ marginTop: 10 }}>
             <div>{label}</div>

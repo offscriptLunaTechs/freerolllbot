@@ -21,8 +21,17 @@ Points have **no cash value** and cannot be withdrawn. See "Real-money payouts" 
 - Stars: `/api/stars/invoice` creates an XTR invoice link. The webhook answers `pre_checkout_query`
   and credits bonus rolls on `successful_payment` (idempotent on `telegram_payment_charge_id`).
 
+## Engagement features
+- **Daily streak**: rolling on consecutive UTC days raises a prize multiplier by 0.1 per day, up to x2.0.
+- **Referrals**: invite link `t.me/<bot>?start=ref_<id>`. The inviter earns 10% of everything the friend wins; the friend starts with +50 points.
+- **Levels**: level n needs 25·(n-1)² points (display only).
+- **Weekly season**: the Top tab shows points won since Monday 00:00 UTC, plus all-time.
+- **Reminders**: Supabase `pg_cron` calls `/api/cron/remind` every 5 minutes; the bot messages players whose free roll is ready again.
+- **Share to story**: `/api/story` renders a 1080x1920 image of the last roll.
+
 ## Settings
 - Cooldown: `update app.config set value = '30' where key = 'cooldown_minutes';`
+- Referral %, welcome bonus, streak step and cap: `ref_percent`, `welcome_bonus`, `streak_step`, `streak_max` in `app.config`.
 - Prize table: `app.prize_for(roll)` in SQL, and the `PRIZES` list in `components/App.tsx` for display.
 - Stars packs: `lib/products.ts`.
 

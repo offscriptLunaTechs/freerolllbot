@@ -5,7 +5,15 @@ export type TgUser = {
   username?: string;
   first_name?: string;
   photo_url?: string;
+  /** startapp parameter from the launch link, if any (validated as part of initData). */
+  start_param?: string;
 };
+
+/** Parses "ref_123" into 123. */
+export function refFrom(param?: string | null): number | null {
+  const m = /^ref_(\d{1,15})$/.exec(param || "");
+  return m ? Number(m[1]) : null;
+}
 
 const MAX_AGE_SECONDS = 24 * 60 * 60;
 
@@ -30,7 +38,7 @@ export function validateInitData(initData: string, botToken: string): TgUser | n
   try {
     const user = JSON.parse(params.get("user") || "null");
     if (!user || typeof user.id !== "number") return null;
-    return user;
+    return { ...user, start_param: params.get("start_param") || undefined };
   } catch {
     return null;
   }

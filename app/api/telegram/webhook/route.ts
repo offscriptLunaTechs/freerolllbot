@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { botApi } from "@/lib/telegram";
+import { botApi, refFrom } from "@/lib/telegram";
 import { rpc } from "@/lib/db";
 import { PRODUCTS, ProductId } from "@/lib/products";
 
@@ -50,12 +50,24 @@ export async function POST(req: NextRequest) {
         });
       }
     } else if (typeof msg?.text === "string" && msg.text.startsWith("/start")) {
-      // 3) /start: show a button that opens the mini app.
+      // 3) /start [ref_123]: register the player (and their inviter), then show the Play button.
+      const ref = refFrom(msg.text.split(" ")[1]);
+      const st = await rpc("api_upsert_player", {
+        p_tg_id: msg.from.id,
+        p_username: msg.from.username ?? null,
+        p_first_name: msg.from.first_name ?? null,
+        p_photo_url: null,
+        p_ref: ref,
+      });
+      const welcome = st?.welcome_bonus ? "\n\n🎁 You were invited by a friend: +50 bonus points are waiting for you." : "";
       await botApi("sendMessage", {
         chat_id: msg.chat.id,
-        text: "🎲 Free Roll: one free roll every hour. Win points and climb the leaderboard.",
+        text:
+          "🎲 Free Roll\n\nOne free roll every hour. Roll 0000–9999 and win up to 10,000 points.\n" +
+          "🔥 Roll every day to grow your streak multiplier (up to x2).\n" +
+          "👥 Invite friends and earn 10% of everything they win." + welcome,
         reply_markup: {
-          inline_keyboard: [[{ text: "Play now", web_app: { url: process.env.APP_URL } }]],
+          inline_keyboard: [[{ text: "🎲 Play now", web_app: { url: process.env.APP_URL } }]],
         },
       });
     } else if (typeof msg?.text === "string" && msg.text.startsWith("/paysupport")) {
