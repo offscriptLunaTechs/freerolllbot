@@ -1,0 +1,33 @@
+:root {
+  --bg: var(--tg-theme-bg-color, #0f1115);
+  --bg2: var(--tg-theme-secondary-bg-color, #181b22);
+  --text: var(--tg-theme-text-color, #f2f3f5);
+  --hint: var(--tg-theme-hint-color, #8b909a);
+  --accent: var(--tg-theme-button-color, #3b82f6);
+  --accent-text: var(--tg-theme-button-text-color, #ffffff);
+  --gold: #f5b301;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; }
+body { padding: 16px 16px 88px; min-height: 100vh; }
+button { font: inherit; cursor: pointer; border: 0; }
+.card { background: var(--bg2); border-radius: 16px; padding: 16px; margin-bottom: 12px; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.hint { color: var(--hint); font-size: 13px; }
+.big { font-size: 56px; font-weight: 800; letter-spacing: 2px; font-variant-numeric: tabular-nums; text-align: center; margin: 8px 0; }
+.big.win { color: var(--gold); text-shadow: 0 0 24px rgba(245,179,1,.5); }
+.btn { width: 100%; padding: 14px; border-radius: 12px; background: var(--accent); color: var(--accent-text); font-weight: 700; font-size: 17px; }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+.stat { font-size: 22px; font-weight: 700; }
+.tabs { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: var(--bg2); border-top: 1px solid rgba(127,127,127,.15); padding-bottom: env(safe-area-inset-bottom); }
+.tabs button { flex: 1; padding: 12px 4px; background: none; color: var(--hint); font-size: 12px; }
+.tabs button.on { color: var(--accent); font-weight: 700; }
+.tabs .ico { display: block; font-size: 20px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+td, th { padding: 8px 4px; text-align: left; border-bottom: 1px solid rgba(127,127,127,.12); }
+th { color: var(--hint); font-weight: 500; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; word-break: break-all; }
+input { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(127,127,127,.3); background: var(--bg); color: var(--text); font: inherit; }
+.ok { color: #22c55e; } .bad { color: #ef4444; }
+.pill { display: inline-block; padding: 2px 8px; border-radius: 99px; background: rgba(127,127,127,.15); font-size: 12px; }
