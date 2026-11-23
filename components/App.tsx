@@ -23,10 +23,12 @@ type State = {
   week_points: number;
   server_time: string;
   welcome_bonus?: boolean;
+  is_admin?: boolean;
+  skip_cooldown?: boolean;
 };
 type RollRow = { id: number; kind: string; roll: number; prize: number; server_seed_hash: string; client_seed: string; nonce: number; created_at: string };
 type Revealed = { id?: number; server_seed: string; server_seed_hash: string; client_seed: string; last_nonce: number };
-type Tab = "roll" | "top" | "invite" | "shop" | "fair";
+type Tab = "roll" | "top" | "invite" | "shop" | "fair" | "admin";
 
 const BOT = process.env.NEXT_PUBLIC_BOT_USERNAME || "Freeroll1bot";
 
@@ -176,9 +178,11 @@ function Game() {
       {tab === "invite" && <InviteTab state={state} />}
       {tab === "shop" && <ShopTab state={state} apply={apply} />}
       {tab === "fair" && <FairTab state={state} apply={apply} />}
+      {tab === "admin" && state.is_admin && <AdminTab state={state} apply={apply} />}
 
       <nav className="tabs">
-        {([["roll", "🎲", "Roll"], ["top", "🏆", "Top"], ["invite", "👥", "Invite"], ["shop", "✨", "Shop"], ["fair", "🔐", "Fair"]] as const).map(([id, ico, label]) => (
+        {([["roll", "🎲", "Roll"], ["top", "🏆", "Top"], ["invite", "👥", "Invite"], ["shop", "✨", "Shop"], ["fair", "🔐", "Fair"],
+           ...(state.is_admin ? [["admin", "🛠", "Admin"]] : [])] as [Tab, string, string][]).map(([id, ico, label]) => (
           <button key={id} className={tab === id ? "on" : ""} onClick={() => { haptic("select"); setTab(id); }}>
             <span className="ico">{ico}</span>{label}
           </button>
@@ -295,6 +299,7 @@ function RollTab({ state, apply, waitMs }: { state: State; apply: (s: State) => 
           {spinning ? "Rolling…" : free ? "🎲 Free roll" : state.bonus_rolls > 0 ? `Use bonus roll (${state.bonus_rolls})` : `Next free roll in ${fmt(waitMs)}`}
         </button>
         {!free && state.bonus_rolls > 0 && <p className="hint center">Free roll in {fmt(waitMs)}</p>}
+        {state.skip_cooldown && <p className="hint center">🛠 Admin: cooldown is off</p>}
         {revealed && last && (
           <button className="btn ghost" style={{ marginTop: 8 }} onClick={shareStory}>📣 Share to story</button>
         )}
@@ -515,6 +520,81 @@ function ShopTab({ state, apply }: { state: State; apply: (s: State) => void }) 
         <p className="hint">Link a TON wallet to your profile. On-chain rewards are not live yet.</p>
         <TonConnectButton />
         {state.wallet_address && <p className="mono" style={{ marginTop: 8 }}>{state.wallet_address}</p>}
+      </div>
+    </>
+  );
+}
+
+function AdminTab({ state, apply }: { state: State; apply: (s: State) => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [streak, setStreak] = useState(String(Math.max(state.streak_days, 5)));
+
+  async function run(action: string, value = 0, label = "Done") {
+    setBusy(action);
+    setMsg(null);
+    try {
+      const s = await api<State>("/api/admin", { action, value });
+      apply(s);
+      setMsg(`✅ ${label}`);
+      haptic("success");
+    } catch (e: any) {
+      setMsg(`❌ ${e.message}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+  const B = ({ a, v = 0, label, done, ghost }: { a: string; v?: number; label: string; done?: string; ghost?: boolean }) => (
+    <button className={`btn ${ghost ? "ghost" : ""}`} style={{ marginTop: 8 }} disabled={!!busy} onClick={() => run(a, v, done || label)}>
+      {busy === a ? "…" : label}
+    </button>
+  );
+
+  return (
+    <>
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>🛠 Admin test tools</h3>
+        <p className="hint">Only visible to admins. Every action is checked on the server.</p>
+        {msg && <p className="center">{msg}</p>}
+
+        <div className="row" style={{ marginTop: 8 }}>
+          <div>
+            <b>Skip cooldown</b>
+            <div className="hint">Roll as often as you like</div>
+          </div>
+          <button className={`btn ${state.skip_cooldown ? "" : "ghost"}`} style={{ width: "auto", padding: "8px 16px" }} disabled={!!busy}
+            onClick={() => run("skip_cooldown", state.skip_cooldown ? 0 : 1, state.skip_cooldown ? "Cooldown is back on" : "Cooldown is off")}>
+            {state.skip_cooldown ? "On" : "Off"}
+          </button>
+        </div>
+        <B a="reset_cooldown" label="Reset free roll cooldown" done="Free roll is ready" ghost />
+      </div>
+
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Balances</h3>
+        <div className="grid2">
+          <B a="add_bonus_rolls" v={10} label="+10 bonus rolls" />
+          <B a="add_points" v={1000} label="+1,000 points" />
+          <B a="add_points" v={10000} label="+10,000 points" ghost />
+          <B a="add_points" v={-1000} label="−1,000 points" ghost />
+        </div>
+      </div>
+
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Streak</h3>
+        <p className="hint">Sets your streak as of yesterday, so your next roll counts as the next day.</p>
+        <div className="row">
+          <input type="number" min={0} max={365} value={streak} onChange={(e) => setStreak(e.target.value)} />
+          <button className="btn" style={{ width: "auto", padding: "10px 16px" }} disabled={!!busy}
+            onClick={() => run("set_streak", Number(streak) || 0, `Streak set to ${Number(streak) || 0}`)}>Set</button>
+        </div>
+      </div>
+
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Reminders</h3>
+        <B a="test_reminder" label="Send me a reminder now" done="Check your chat with the bot" />
+        <B a="cooldown_ready_soon" label="Real reminder test (about 5 min)" done="Cooldown ends in 1 min. The reminder job runs every 5 min." ghost />
+        <p className="hint">The second button turns cooldown skipping off and makes your free roll ready in a minute, so you get the real reminder.</p>
       </div>
     </>
   );

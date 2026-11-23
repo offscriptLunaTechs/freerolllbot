@@ -57,3 +57,5 @@ input { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid 
 tr.me td { color: var(--accent); font-weight: 700; }
 .stats3 { justify-content: space-around; text-align: center; margin-top: 8px; }
 .toast { position: fixed; top: 12px; left: 16px; right: 16px; z-index: 10; background: var(--accent); color: var(--accent-text); padding: 12px 14px; border-radius: 12px; font-weight: 600; box-shadow: 0 8px 24px rgba(0,0,0,.3); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+.grid2 .btn { font-size: 15px; padding: 12px 8px; }
